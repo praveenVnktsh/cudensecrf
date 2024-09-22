@@ -5,6 +5,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from bilateral import bilateral_filter_torch_triton
+
 class CRF(nn.Module):
     """
     Class for learning and inference in conditional random field model using mean field approximation
@@ -45,7 +47,7 @@ class CRF(nn.Module):
     def _set_param(self, name, init_value):
         setattr(self, name, nn.Parameter(torch.tensor(init_value, dtype=torch.float, requires_grad=self.requires_grad)))
 
-    def forward(self, x, spatial_spacings=None, verbose=False):
+    def forward(self, x, img, spatial_spacings=None, verbose=False):
         """
         Parameters
         ----------
@@ -77,13 +79,23 @@ class CRF(nn.Module):
 
         for i in tqdm(range(self.n_iter), disable=not verbose):
             # normalizing
-            x = F.softmax(x, dim=1)
+            q = F.softmax(x, dim=1)
 
             # message passing
-            x = self.smoothness_weight * self._smoothing_filter(x, spatial_spacings)
+            messages = self.smoothness_weight * self._smoothing_filter(q, spatial_spacings)
+
+            filtered_potential = bilateral_filter_torch_triton(
+                    img=img,          # RGB image for batch b
+                    spatial_sigma=1,
+                    range_sigma=1,
+                    kernel_radius=11,
+                )
+
+            # Store the filtered result
+            filtered_messages = messages + filtered_potential.unsqueeze(0)
 
             # compatibility transform
-            x = self._compatibility_transform(x)
+            x = self._compatibility_transform(filtered_messages)
 
             # adding unary potentials
             x = negative_unary - x
@@ -190,6 +202,7 @@ class CRF(nn.Module):
         """
         labels = torch.arange(x.shape[1])
         compatibility_matrix = self._compatibility_function(labels, labels.unsqueeze(1)).to(x)
+
         return torch.einsum('ij..., jk -> ik...', x, compatibility_matrix)
 
     @staticmethod
@@ -220,7 +233,7 @@ def load_tile(root):
     return np.stack(stacked, axis=0)
 
 def dump_image(img, path):
-    img = img.squeeze()
+    # img = img
     img = F.softmax(img, dim=0).argmax(dim=0).detach().cpu().numpy()
     # img = (img * 255).astype(np.uint8)
     new_img = np.zeros((img.shape[0], img.shape[1], 3), dtype=np.uint8)
@@ -230,15 +243,20 @@ def dump_image(img, path):
 if __name__ == "__main__":
     import cv2
     import time
-    model = nn.Sequential(
-        CRF(n_spatial_dims=2, n_iter=1, filter_size=3, smoothness_weight=1, smoothness_theta=0.8)
-    ).cuda()
+    model = CRF(n_spatial_dims=1).cuda()
+
+    batch_size, n_channels, spatial = 1, 3, (512, 512)
+    x = torch.zeros(batch_size, n_channels, *spatial)
+    # profiler = cProfile.Profile()
+    # profiler.enable()
 
     starttime = time.time()
-    anno = np.load('data/tile.npy')
-    anno = torch.from_numpy(anno).float().cuda().unsqueeze(0)
-    dump_image(anno, 'outputs/anno.png')
-    x = anno
-    log_proba = model(x)
+    tile = np.load('data/tile.npy')
+    anno = np.load('data/intensity.npy')
+    anno = torch.from_numpy(anno).float().cuda()
+    anno = F.interpolate(anno.unsqueeze(0).unsqueeze(0), spatial, mode='bilinear').squeeze(0).squeeze(0)
+    tile = torch.from_numpy(tile).float().cuda()
+    
+    log_proba = model(tile, anno)
     print(f'Time: {time.time() - starttime}')
     dump_image(log_proba, 'outputs/log_proba.png')
