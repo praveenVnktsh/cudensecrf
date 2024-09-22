@@ -32,7 +32,7 @@ class CRF(nn.Module):
         If it is a sequence its length must be equal to ``n_spatial_dims``.
     """
 
-    def __init__(self, n_spatial_dims, filter_size=11, n_iter=5, requires_grad=True,
+    def __init__(self, n_spatial_dims, filter_size=11, n_iter=10, requires_grad=True,
                  returns='logits', smoothness_weight=1, smoothness_theta=1):
         super().__init__()
         self.n_spatial_dims = n_spatial_dims
@@ -85,7 +85,8 @@ class CRF(nn.Module):
             messages = self.smoothness_weight * self._smoothing_filter(q, spatial_spacings)
 
             filtered_potential = bilateral_filter_torch_triton(
-                    img=img,          # RGB image for batch b
+                    unary=q,
+                    img=img,         
                     spatial_sigma=1,
                     range_sigma=1,
                     kernel_radius=11,
@@ -233,7 +234,7 @@ def load_tile(root):
     return np.stack(stacked, axis=0)
 
 def dump_image(img, path):
-    # img = img
+    img = img.squeeze(0)
     img = F.softmax(img, dim=0).argmax(dim=0).detach().cpu().numpy()
     # img = (img * 255).astype(np.uint8)
     new_img = np.zeros((img.shape[0], img.shape[1], 3), dtype=np.uint8)
@@ -243,20 +244,29 @@ def dump_image(img, path):
 if __name__ == "__main__":
     import cv2
     import time
-    model = CRF(n_spatial_dims=1).cuda()
+    model = CRF(n_spatial_dims=2).cuda()
 
     batch_size, n_channels, spatial = 1, 3, (512, 512)
     x = torch.zeros(batch_size, n_channels, *spatial)
     # profiler = cProfile.Profile()
     # profiler.enable()
 
-    starttime = time.time()
     tile = np.load('data/tile.npy')
     anno = np.load('data/intensity.npy')
-    anno = torch.from_numpy(anno).float().cuda()
+    anno = torch.from_numpy(anno).float().cuda() / 65535
     anno = F.interpolate(anno.unsqueeze(0).unsqueeze(0), spatial, mode='bilinear').squeeze(0).squeeze(0)
-    tile = torch.from_numpy(tile).float().cuda()
+    tile = torch.from_numpy(tile).float().cuda().unsqueeze(0)
     
+    for _ in range(3):
+        log_proba = model(tile, anno)
+    
+
+    starttime = time.time()
     log_proba = model(tile, anno)
+    loss = log_proba.sum()
+    loss.backward()
+
+    import IPython; IPython.embed()
+
     print(f'Time: {time.time() - starttime}')
     dump_image(log_proba, 'outputs/log_proba.png')

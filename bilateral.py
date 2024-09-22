@@ -6,12 +6,14 @@ import matplotlib.pyplot as plt
 
 @triton.jit
 def bilateral_filter_kernel(
+    input_ptr,
     img_ptr,  # Input image
     out_ptr,  # Output image
     width,  # Image width
     height,  # Image height
     spatial_sigma,
     range_sigma,
+    value_sigma,
     kernel_radius,
     BLOCK_SIZE: tl.constexpr,
 ):
@@ -22,6 +24,8 @@ def bilateral_filter_kernel(
 
     # Load the central pixel intensity
     offset = y * width + x
+
+    center_value = tl.load(input_ptr + offset, mask=mask, other=0.0)
     center_intensity = tl.load(img_ptr + offset, mask=mask, other=0.0)
 
     # Initialize accumulators
@@ -48,10 +52,16 @@ def bilateral_filter_kernel(
                 img_ptr + neighbor_offset, mask=neighbor_mask, other=0.0
             )
 
+            neighbor_value = tl.load(
+                input_ptr + neighbor_offset, mask=neighbor_mask, other=0.0
+            )
+            value_diff = (neighbor_value - center_value)
+            
             # Compute range weight
             range_diff = neighbor_intensity - center_intensity
             range_weight = tl.exp(
-                -0.5 * (range_diff * range_diff) / (range_sigma * range_sigma)
+                -0.5 * (range_diff * range_diff) / (range_sigma * range_sigma) +
+                -0.5 * (value_diff * value_diff) / (value_sigma * value_sigma)
             )
 
             # Compute combined weight
@@ -71,11 +81,12 @@ def bilateral_filter_kernel(
     tl.store(out_ptr + offset, out_pixel, mask=mask)
 
 
-def bilateral_filter_torch_triton(img, spatial_sigma, range_sigma, kernel_radius):
+def bilateral_filter_torch_triton(unary, img, spatial_sigma, range_sigma, kernel_radius):
     # Ensure the image is a 2D tensor
     assert img.ndim == 2, "Input image must be grayscale and 2D"
     height, width = img.shape
     img = img.contiguous()
+    unary = unary.contiguous()
 
     # Allocate output tensor
     out = torch.empty_like(img)
@@ -93,12 +104,14 @@ def bilateral_filter_torch_triton(img, spatial_sigma, range_sigma, kernel_radius
 
     # Launch Triton kernel
     bilateral_filter_kernel[grid](
+        input_ptr=unary,
         img_ptr=img,
         out_ptr=out,
         width=width,
         height=height,
         spatial_sigma=spatial_sigma,
         range_sigma=range_sigma,
+        value_sigma=1,
         kernel_radius=kernel_radius,
         BLOCK_SIZE=BLOCK_SIZE,
     )
