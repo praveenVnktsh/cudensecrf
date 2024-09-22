@@ -85,6 +85,10 @@ def convolve_1d(input, kernel):
     grid = (B, num_blocks)
     half_kernel_size = kernel.shape[0] // 2
 
+    device = input.device
+    assert device.type == "cuda", "Input tensor must be on a CUDA device for triton ops."
+    kernel = kernel.to(device)
+
     convolve[grid](
         input_ptr=input,
         output_ptr=output,
@@ -94,3 +98,33 @@ def convolve_1d(input, kernel):
         BLOCK_SIZE=BLOCK_SIZE,
     )
     return output
+
+
+
+if __name__ == "__main__":
+    import torch
+    import time
+
+    # Benchmark
+    ksize = 5
+    B =10
+    input_data = torch.randn(B, 100).cuda()
+    kernel = torch.randn(ksize).cuda()
+
+    # warmup
+    for i in range(3):
+        output = convolve_1d(input_data, kernel)
+    
+    starttime = time.time()
+    for i in range(100):
+        triton_output = convolve_1d(input_data, kernel)
+
+    print(f'Triton Time: {time.time() - starttime}')
+
+
+    starttime = time.time()
+    for i in range(100):
+        torch_output = torch.nn.functional.conv1d(input_data.view(B, 1, -1), kernel.view(1, 1, -1), padding=ksize //2)
+
+    print(f'PyTorch Time: {time.time() - starttime}')
+    print(f"Matches Reference impl: {torch.allclose(triton_output, torch_output.reshape(B, 100), atol=1e-5)}")

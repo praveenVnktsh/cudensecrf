@@ -4,9 +4,6 @@ from tqdm import tqdm
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import cProfile
-import pstats
-import io
 
 class CRF(nn.Module):
     """
@@ -211,24 +208,37 @@ class CRF(nn.Module):
         """
         return -(label1 == label2).float()
     
+
+def load_tile(root):
+    import glob
+    stacked = []
+    H = 512
+    for path in glob.glob(root + '*.tiff'):
+        img = cv2.imread(path, cv2.IMREAD_UNCHANGED).astype(np.float32) / 255.0
+        img = cv2.resize(img, (H, H))
+        stacked.append(img)
+    return np.stack(stacked, axis=0)
+
+def dump_image(img, path):
+    img = img.squeeze()
+    img = F.softmax(img, dim=0).argmax(dim=0).detach().cpu().numpy()
+    # img = (img * 255).astype(np.uint8)
+    new_img = np.zeros((img.shape[0], img.shape[1], 3), dtype=np.uint8)
+    new_img[..., 1] = img * 255 / 12
+    cv2.imwrite(path, new_img)
+
 if __name__ == "__main__":
+    import cv2
+    import time
     model = nn.Sequential(
-        nn.Identity(),  # your NN
-        CRF(n_spatial_dims=2)
-    )
+        CRF(n_spatial_dims=2, n_iter=1, filter_size=3, smoothness_weight=1, smoothness_theta=0.8)
+    ).cuda()
 
-    
-
-    batch_size, n_channels, spatial = 1, 3, (100, 100)
-    x = torch.zeros(batch_size, n_channels, *spatial)
-    # profiler = cProfile.Profile()
-    # profiler.enable()
-    
+    starttime = time.time()
+    anno = np.load('data/tile.npy')
+    anno = torch.from_numpy(anno).float().cuda().unsqueeze(0)
+    dump_image(anno, 'outputs/anno.png')
+    x = anno
     log_proba = model(x)
-
-    # profiler.disable()
-    # s = io.StringIO()
-    # sortby = 'cumulative'
-    # ps = pstats.Stats(profiler, stream=s).sort_stats(sortby)
-    # ps.print_stats(10)  # Top 10 functions
-    # print(s.getvalue())
+    print(f'Time: {time.time() - starttime}')
+    dump_image(log_proba, 'outputs/log_proba.png')
