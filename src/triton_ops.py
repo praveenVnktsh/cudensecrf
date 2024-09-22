@@ -73,6 +73,10 @@ def convolve_1d(input, kernel):
     on GPU by parallelizing over the batch dimension and the sequence length.
     """
 
+    device = input.device
+    assert device.type == "cuda", "Input tensor must be on a CUDA device for triton ops."
+    assert input.device == kernel.device, "Input and kernel must be on the same CUDA device."
+
     B, X = input.shape
     output = torch.empty_like(input)
 
@@ -80,10 +84,6 @@ def convolve_1d(input, kernel):
     num_blocks = (X + BLOCK_SIZE - 1) // BLOCK_SIZE
     grid = (B, num_blocks)
     half_kernel_size = kernel.shape[0] // 2
-
-    device = input.device
-    assert device.is_cuda, "Input tensor must be on a CUDA device for triton ops."
-    kernel = kernel.to(device)
 
     convolve[grid](
         input_ptr=input,
